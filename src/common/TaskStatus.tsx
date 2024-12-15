@@ -1,19 +1,17 @@
 import React from "react";
 import { Box } from "@chakra-ui/react";
-import { CurrentTaskSlice } from "../state/currentTask";
-import { useAppState } from "../state/store";
+import { useCoreTaskStore } from "../state/hooks";
+import { useUITask } from "../state/uiTask";
 
 export default function TaskStatus() {
-  const { taskStatus, actionStatus } = useAppState((state) => ({
-    taskStatus: state.currentTask.status,
-    actionStatus: state.currentTask.actionStatus,
-  }));
+  const { status: taskStatus } = useCoreTaskStore();
+  const { actionStatus } = useUITask();
 
   if (taskStatus !== "running") {
     return null;
   }
 
-  const displayedStatus: Record<CurrentTaskSlice["actionStatus"], string> = {
+  const displayedStatus: Record<typeof actionStatus, string> = {
     idle: "💤 Idle",
     "attaching-debugger": "🔗 Attaching Debugger",
     "pulling-dom": "🌐 Understanding Website",

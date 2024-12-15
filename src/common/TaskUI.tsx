@@ -11,6 +11,8 @@ import {
 } from "@chakra-ui/react";
 import { debugMode } from "../constants";
 import { useAppState } from "../state/store";
+import { useUITask } from "../state/uiTask";
+import { useCoreTaskStore } from "../state/hooks";
 import RunTaskButton from "./RunTaskButton";
 import VoiceButton from "./VoiceButton";
 import TaskHistory from "./TaskHistory";
@@ -32,13 +34,13 @@ const injectContentScript = async () => {
 };
 
 function ActionExecutor() {
-  const state = useAppState((state) => ({
-    attachDebugger: state.currentTask.actions.attachDebugger,
-    detachDegugger: state.currentTask.actions.detachDebugger,
-    performActionString: state.currentTask.actions.performActionString,
-    prepareLabels: state.currentTask.actions.prepareLabels,
-    showImagePrompt: state.currentTask.actions.showImagePrompt,
-  }));
+  const { actions: coreActions } = useCoreTaskStore();
+  const { actions: uiActions } = useUITask();
+
+  const handleAttachDebugger = useCallback(async () => {
+    await coreActions.attachDebugger();
+  }, [coreActions]);
+
   return (
     <Box mt={4}>
       <HStack
@@ -50,32 +52,30 @@ function ActionExecutor() {
         shouldWrapChildren
         wrap="wrap"
       >
-        <Button onClick={state.attachDebugger}>Attach</Button>
-        <Button onClick={state.prepareLabels}>Prepare</Button>
-        <Button onClick={state.showImagePrompt}>Show Image</Button>
-        <Button
-          onClick={() => {
-            injectContentScript();
-          }}
-        >
-          Inject
-        </Button>
+        <Button onClick={handleAttachDebugger}>Attach</Button>
+        <Button onClick={() => uiActions.prepareLabels()}>Prepare</Button>
+        <Button onClick={() => uiActions.showImagePrompt()}>Show Image</Button>
+        <Button onClick={injectContentScript}>Inject</Button>
       </HStack>
     </Box>
   );
 }
 
 const TaskUI = () => {
-  const state = useAppState((state) => ({
-    taskHistory: state.currentTask.history,
-    taskStatus: state.currentTask.status,
-    runTask: state.currentTask.actions.runTask,
+  const uiState = useAppState((state) => ({
     instructions: state.ui.instructions,
     setInstructions: state.ui.actions.setInstructions,
     voiceMode: state.settings.voiceMode,
-    isListening: state.currentTask.isListening,
   }));
-  const taskInProgress = state.taskStatus === "running";
+
+  const {
+    status: taskStatus,
+    history: taskHistory,
+    actions: taskActions,
+  } = useCoreTaskStore();
+  const { isListening } = useUITask();
+
+  const taskInProgress = taskStatus === "running";
 
   const toast = useToast();
 
@@ -93,15 +93,17 @@ const TaskUI = () => {
   );
 
   const runTask = useCallback(() => {
-    state.instructions && state.runTask(toastError);
-  }, [state, toastError]);
+    if (uiState.instructions) {
+      taskActions.runTask(uiState.instructions, toastError);
+    }
+  }, [uiState.instructions, taskActions, toastError]);
 
   const runTaskWithNewInstructions = (newInstructions: string = "") => {
     if (!newInstructions) {
       return;
     }
-    state.setInstructions(newInstructions);
-    state.runTask(toastError);
+    uiState.setInstructions(newInstructions);
+    taskActions.runTask(newInstructions, toastError);
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -117,15 +119,15 @@ const TaskUI = () => {
         // eslint-disable-next-line jsx-a11y/no-autofocus
         autoFocus
         placeholder="Try telling Fuji to do a task"
-        value={state.instructions || ""}
-        isDisabled={taskInProgress || state.isListening}
-        onChange={(e) => state.setInstructions(e.target.value)}
+        value={uiState.instructions || ""}
+        isDisabled={taskInProgress || isListening}
+        onChange={(e) => uiState.setInstructions(e.target.value)}
         mb={2}
         onKeyDown={onKeyDown}
       />
       <HStack mt={2} mb={2}>
         <RunTaskButton runTask={runTask} />
-        {state.voiceMode && (
+        {uiState.voiceMode && (
           <VoiceButton
             taskInProgress={taskInProgress}
             onStopSpeaking={runTask}
@@ -133,7 +135,7 @@ const TaskUI = () => {
         )}
         <Spacer />
       </HStack>
-      {state.voiceMode && (
+      {uiState.voiceMode && (
         <Alert status="info" borderRadius="lg">
           <AlertIcon />
           <AlertDescription fontSize="sm" lineHeight="5">
@@ -143,12 +145,12 @@ const TaskUI = () => {
           </AlertDescription>
         </Alert>
       )}
-      {!state.voiceMode && !state.instructions && (
+      {!uiState.voiceMode && !uiState.instructions && (
         <RecommendedTasks runTask={runTaskWithNewInstructions} />
       )}
       {debugMode && <ActionExecutor />}
       <TaskStatus />
-      <TaskHistory />
+      <TaskHistory history={taskHistory} />
     </>
   );
 };

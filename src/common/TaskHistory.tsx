@@ -17,15 +17,16 @@ import {
   ColorProps,
   BackgroundProps,
 } from "@chakra-ui/react";
-import { TaskHistoryEntry } from "../state/currentTask";
 import { BsSortNumericDown, BsSortNumericUp } from "react-icons/bs";
-import { useAppState } from "../state/store";
+import { useCoreTaskStore } from "../state/hooks";
+import { useUITask } from "../state/uiTask";
 import CopyButton from "./CopyButton";
 import Notes from "./CustomKnowledgeBase/Notes";
+import type { TaskHistoryEntry } from "../state/taskCore";
 
 function MatchedNotes() {
-  const knowledge = useAppState((state) => state.currentTask.knowledgeInUse);
-  const notes = knowledge?.notes;
+  const { knowledgeInUse } = useUITask();
+  const notes = knowledgeInUse?.notes;
   if (!notes || notes.length === 0) {
     return null;
   }
@@ -153,18 +154,19 @@ const TaskHistoryItem = ({ index, entry }: TaskHistoryItemProps) => {
   );
 };
 
-export default function TaskHistory() {
-  const { taskHistory, taskStatus } = useAppState((state) => ({
-    taskStatus: state.currentTask.status,
-    taskHistory: state.currentTask.history,
-  }));
+interface TaskHistoryProps {
+  history: TaskHistoryEntry[];
+}
+
+export default function TaskHistory({ history }: TaskHistoryProps) {
+  const { status: taskStatus } = useCoreTaskStore();
   const [sortNumericDown, setSortNumericDown] = useState(false);
   const toggleSort = () => {
     setSortNumericDown(!sortNumericDown);
   };
 
-  if (taskHistory.length === 0 && taskStatus !== "running") return null;
-  const historyItems = taskHistory.map((entry, index) => (
+  if (history.length === 0 && taskStatus !== "running") return null;
+  const historyItems = history.map((entry: TaskHistoryEntry, index: number) => (
     <TaskHistoryItem key={index} index={index} entry={entry} />
   ));
   historyItems.unshift(<MatchedNotes key="matched-notes" />);
@@ -186,7 +188,7 @@ export default function TaskHistory() {
           _hover={{ color: "gray.700" }}
           onClick={toggleSort}
         />
-        <CopyButton text={JSON.stringify(taskHistory, null, 2)} />
+        <CopyButton text={JSON.stringify(history, null, 2)} />
       </HStack>
       <Accordion allowMultiple w="full" pb="4">
         {historyItems}

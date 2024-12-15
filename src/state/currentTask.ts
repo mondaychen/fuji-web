@@ -1,374 +1,200 @@
-import OpenAI from "openai";
-import { attachDebugger, detachAllDebuggers } from "../helpers/chromeDebugger";
-import {
-  disableIncompatibleExtensions,
-  reenableExtensions,
-} from "../helpers/disableExtensions";
-import { determineNextAction } from "../helpers/dom-agent/determineNextAction";
-import {
-  determineNextActionWithVision,
-  type QueryResult,
-} from "../helpers/vision-agent/determineNextAction";
-import { determineNavigateAction } from "../helpers/vision-agent/determineNavigateAction";
-import {
-  type Action,
-  parseResponse,
-} from "../helpers/vision-agent/parseResponse";
-import { callRPCWithTab } from "../helpers/rpc/pageRPC";
-import { getSimplifiedDom } from "../helpers/simplifyDom";
-import { sleep, truthyFilter, waitFor } from "../helpers/utils";
-import {
-  operateTool,
-  operateToolWithSimpliedDom,
-} from "../helpers/rpc/performAction";
-import { waitTillHTMLRendered } from "../helpers/rpc/utils";
-import { findActiveTab } from "../helpers/browserUtils";
-import { MyStateCreator } from "./store";
-import buildAnnotatedScreenshots from "../helpers/buildAnnotatedScreenshots";
+import { StateCreator } from "zustand";
+import { coreTaskStore } from "./taskCore";
+import { useUITask } from "./uiTask";
+import type { StoreType } from "./store";
+import type { Knowledge } from "../helpers/knowledge";
+import type { Action } from "../helpers/vision-agent/parseResponse";
+import type OpenAI from "openai";
 import { voiceControl } from "../helpers/voiceControl";
-import { fetchKnowledge, type Knowledge } from "../helpers/knowledge";
-import { isValidModelSettings, AgentMode } from "../helpers/aiSdkUtils";
+import { isValidModelSettings } from "../helpers/aiSdkUtils";
+import { findActiveTab } from "../helpers/browserUtils";
+import { fetchKnowledge } from "../helpers/knowledge";
+import buildAnnotatedScreenshots from "../helpers/buildAnnotatedScreenshots";
+import { callRPCWithTab } from "../helpers/rpc/pageRPC";
+import { sleep } from "../helpers/utils";
+import { parseResponse } from "../helpers/vision-agent/parseResponse";
+import { operateTool } from "../helpers/rpc/performAction";
 
-export type TaskHistoryEntry = {
+export interface TaskHistoryEntry {
   prompt: string;
-  response: string;
+  rawResponse: string;
   action: Action;
-  usage: OpenAI.CompletionUsage | undefined;
-};
+  usage?: OpenAI.CompletionUsage;
+}
 
-export type CurrentTaskSlice = {
-  tabId: number;
-  isListening: boolean;
-  history: TaskHistoryEntry[];
-  status: "idle" | "running" | "success" | "error" | "interrupted";
-  knowledgeInUse: Knowledge | null;
-  actionStatus:
-    | "idle"
-    | "attaching-debugger"
-    | "pulling-dom"
-    | "annotating-page"
-    | "fetching-knoweldge"
-    | "generating-action"
-    | "performing-action"
-    | "waiting";
-  actions: {
-    runTask: (onError: (error: string) => void) => Promise<void>;
-    interrupt: () => void;
-    attachDebugger: () => Promise<void>;
-    detachDebugger: () => Promise<void>;
-    showImagePrompt: () => Promise<void>;
-    prepareLabels: () => Promise<void>;
-    performActionString: (actionString: string) => Promise<void>;
-    startListening: () => void;
-    stopListening: () => void;
+export interface CurrentTaskSlice {
+  currentTask: {
+    tabId: number;
+    isListening: boolean;
+    history: TaskHistoryEntry[];
+    status: "idle" | "running" | "success" | "error" | "interrupted";
+    actionStatus:
+      | "idle"
+      | "attaching-debugger"
+      | "pulling-dom"
+      | "annotating-page"
+      | "fetching-knoweldge"
+      | "generating-action"
+      | "performing-action"
+      | "waiting";
+    knowledgeInUse: Knowledge | null;
+    actions: {
+      runTask: (onError?: (error: string) => void) => Promise<void>;
+      interrupt: () => void;
+      attachDebugger: (tabId?: number) => Promise<void>;
+      detachDebugger: () => Promise<void>;
+      showImagePrompt: () => Promise<void>;
+      prepareLabels: () => Promise<void>;
+      performActionString: (actionString: string) => Promise<void>;
+      startListening: () => void;
+      stopListening: () => void;
+      setKnowledge: (knowledge: Knowledge | null) => void;
+    };
   };
-};
-export const createCurrentTaskSlice: MyStateCreator<CurrentTaskSlice> = (
-  set,
-  get,
-) => ({
-  tabId: -1,
-  isListening: false,
-  history: [],
-  status: "idle",
-  actionStatus: "idle",
-  knowledgeInUse: null,
-  actions: {
-    runTask: async (onError) => {
-      const voiceMode = get().settings.voiceMode;
+}
 
-      if (
-        !isValidModelSettings(
-          get().settings.selectedModel,
-          get().settings.agentMode,
-          get().settings.openAIKey,
-          get().settings.anthropicKey,
-          get().settings.geminiKey,
-        )
-      ) {
-        onError(
-          "The current model settings are not valid. Please verify your API keys, and note that some models are not compatible with certain agent modes.",
-        );
-        return;
-      }
+export const createCurrentTaskSlice: StateCreator<
+  StoreType,
+  [],
+  [],
+  CurrentTaskSlice
+> = (set, get) => {
+  // Subscribe to core store changes
+  coreTaskStore.subscribe((coreState) => {
+    set((state: StoreType) => ({
+      currentTask: {
+        ...state.currentTask,
+        status: coreState.status,
+        history: coreState.history,
+        tabId: coreState.tabId,
+      },
+    }));
+  });
 
-      const agentMode = get().settings.agentMode;
+  // Subscribe to UI store changes
+  useUITask.subscribe((uiState) => {
+    set((state: StoreType) => ({
+      currentTask: {
+        ...state.currentTask,
+        actionStatus: uiState.actionStatus,
+        isListening: uiState.isListening,
+        knowledgeInUse: uiState.knowledgeInUse,
+      },
+    }));
+  });
 
-      const wasStopped = () => get().currentTask.status !== "running";
-      const setActionStatus = (status: CurrentTaskSlice["actionStatus"]) => {
-        set((state) => {
-          state.currentTask.actionStatus = status;
-        });
-      };
+  return {
+    currentTask: {
+      tabId: coreTaskStore.getState().tabId,
+      isListening: false,
+      history: [],
+      status: "idle",
+      actionStatus: "idle",
+      knowledgeInUse: null,
+      actions: {
+        runTask: async (onError) => {
+          const voiceMode = get().settings.voiceMode;
+          const instructions = get().ui.instructions;
 
-      const instructions = get().ui.instructions;
-      if (voiceMode && instructions) {
-        voiceControl.speak("The current task is to " + instructions, onError);
-      }
+          if (!instructions) return;
 
-      if (!instructions || get().currentTask.status === "running") return;
+          // Validate model settings
+          if (
+            !isValidModelSettings(
+              get().settings.selectedModel,
+              get().settings.agentMode,
+              get().settings.openAIKey,
+              get().settings.anthropicKey,
+              get().settings.geminiKey,
+            )
+          ) {
+            const error =
+              "The current model settings are not valid. Please verify your API keys, and note that some models are not compatible with certain agent modes.";
+            onError?.(error);
+            return;
+          }
 
-      set((state) => {
-        state.currentTask.history = [];
-        state.currentTask.status = "running";
-        state.currentTask.actionStatus = "attaching-debugger";
-      });
+          // Handle voice mode
+          if (voiceMode && instructions) {
+            voiceControl.speak(
+              "The current task is to " + instructions,
+              onError || console.error,
+            );
+          }
 
-      try {
-        await disableIncompatibleExtensions();
-
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          if (wasStopped()) break;
-
-          // always get latest tab info, since actions such as button clicking might have changed it
-          let activeTab = await findActiveTab();
+          // Run the task using core store
+          await coreTaskStore.getState().actions.runTask(instructions, onError);
+        },
+        interrupt: () => {
+          coreTaskStore.getState().actions.interrupt();
+        },
+        attachDebugger: async (tabId) => {
+          await coreTaskStore.getState().actions.attachDebugger(tabId);
+        },
+        detachDebugger: async () => {
+          await coreTaskStore.getState().actions.detachDebugger();
+        },
+        showImagePrompt: async () => {
+          const activeTab = await findActiveTab();
           const tabId = activeTab?.id || -1;
           if (!activeTab || !tabId) {
             throw new Error("No active tab found");
           }
-          if (activeTab.status === "loading") {
-            // wait for tab to be loaded
-            await waitFor(
-              async () => {
-                // findActiveTab give a new reference to activeTab every time
-                activeTab = await findActiveTab();
-                return activeTab?.status === "complete";
-              },
-              200, // check every 200ms
-              100, // wait for up to 20 seconds (100*200ms)
-              false, // assume page fully loaded on timeout
-            );
+          const customKnowledgeBase = get().settings.customKnowledgeBase;
+          const knowledge = await fetchKnowledge(
+            new URL(activeTab.url ?? ""),
+            customKnowledgeBase,
+          );
+          const [imgData, labelData] = await buildAnnotatedScreenshots(
+            tabId,
+            knowledge,
+          );
+          console.log(labelData);
+          openBase64InNewTab(imgData, "image/webp");
+        },
+        prepareLabels: async () => {
+          const activeTab = await findActiveTab();
+          const tabId = activeTab?.id || -1;
+          if (!activeTab || !tabId) {
+            throw new Error("No active tab found");
           }
-
-          const performAction = async (
-            query: QueryResult,
-          ): Promise<boolean> => {
-            if (query == null) {
-              set((state) => {
-                state.currentTask.status = "error";
-              });
-              return false;
-            }
-
-            setActionStatus("performing-action");
-            if (voiceMode) {
-              if ("speak" in query.action && query.action.speak) {
-                voiceControl.speak(query.action.speak, onError);
-              } else if ("thought" in query.action && query.action.thought) {
-                voiceControl.speak(query.action.thought, onError);
-              }
-            }
-
-            set((state) => {
-              query &&
-                state.currentTask.history.push({
-                  prompt: query.prompt,
-                  response: query.rawResponse,
-                  action: query.action,
-                  usage: query.usage,
-                });
-            });
-            if (
-              query.action.operation === null ||
-              query.action.operation.name === "finish" ||
-              query.action.operation.name === "fail"
-            ) {
-              return false;
-            }
-            if (agentMode === AgentMode.VisionEnhanced) {
-              await operateTool(tabId, query.action.operation);
-            } else {
-              await operateToolWithSimpliedDom(tabId, query.action.operation);
-            }
-            return true;
-          };
-
-          let query: QueryResult | null = null;
-
-          // check if the tab does not allow attaching debugger, e.g. chrome:// pages
-          if (activeTab.url?.startsWith("chrome")) {
-            setActionStatus("generating-action");
-            query = await determineNavigateAction(instructions);
-
-            if (wasStopped()) break;
-
-            const shouldContinue = await performAction(query);
-            if (shouldContinue) {
-              // if navigation was successful, continue the task on the new page
-              setActionStatus("waiting");
-              continue;
-            } else {
-              break;
-            }
+          const customKnowledgeBase = get().settings.customKnowledgeBase;
+          const knowledge = await fetchKnowledge(
+            new URL(activeTab.url ?? ""),
+            customKnowledgeBase,
+          );
+          await callRPCWithTab(tabId, "drawLabels", [knowledge]);
+          await sleep(800);
+          await callRPCWithTab(tabId, "removeLabels", []);
+        },
+        performActionString: async (actionString: string) => {
+          const parsedResponse = parseResponse(actionString);
+          if (
+            parsedResponse.operation.name === "finish" ||
+            parsedResponse.operation.name === "fail"
+          ) {
+            return;
           }
-          await attachDebugger(tabId);
-          await waitTillHTMLRendered(tabId);
-
-          set((state) => {
-            state.currentTask.tabId = tabId;
-          });
-
-          const previousActions = get()
-            .currentTask.history.map((entry) => entry.action)
-            .filter(truthyFilter);
-
-          if (agentMode === AgentMode.VisionEnhanced) {
-            setActionStatus("fetching-knoweldge");
-            const url = new URL(activeTab.url ?? "");
-            const customKnowledgeBase = get().settings.customKnowledgeBase;
-            const knowledge = await fetchKnowledge(url, customKnowledgeBase);
-            set((state) => {
-              state.currentTask.knowledgeInUse = knowledge;
-            });
-
-            setActionStatus("annotating-page");
-            const [imgData, labelData] = await buildAnnotatedScreenshots(
-              tabId,
-              knowledge,
-            );
-            const viewportPercentage = await callRPCWithTab(
-              tabId,
-              "getViewportPercentage",
-              [],
-            );
-            if (wasStopped()) break;
-            setActionStatus("generating-action");
-            query = await determineNextActionWithVision(
-              instructions,
-              url,
-              knowledge,
-              previousActions,
-              imgData,
-              labelData,
-              viewportPercentage,
-              3,
-              onError,
-            );
-          } else {
-            setActionStatus("pulling-dom");
-            const pageDOM = await getSimplifiedDom();
-            if (!pageDOM) {
-              set((state) => {
-                state.currentTask.status = "error";
-              });
-              break;
-            }
-
-            if (wasStopped()) break;
-            setActionStatus("generating-action");
-            query = await determineNextAction(
-              instructions,
-              previousActions,
-              pageDOM.outerHTML,
-              3,
-              onError,
-            );
-          }
-
-          if (wasStopped()) break;
-
-          const shouldContinue = await performAction(query);
-
-          if (wasStopped() || !shouldContinue) break;
-
-          // While testing let's automatically stop after 50 actions to avoid
-          // infinite loops
-          if (get().currentTask.history.length >= 50) {
-            break;
-          }
-
-          setActionStatus("waiting");
-        } // end of while loop
-        set((state) => {
-          state.currentTask.status = "success";
-        });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } catch (e: any) {
-        console.error(e);
-        onError(e.message);
-        set((state) => {
-          state.currentTask.status = "error";
-        });
-      } finally {
-        await detachAllDebuggers();
-        await reenableExtensions();
-      }
+          await operateTool(
+            get().currentTask.currentTask.tabId,
+            parsedResponse.operation,
+          );
+        },
+        startListening: () => {
+          useUITask.getState().actions.startListening();
+          voiceControl.startListening();
+        },
+        stopListening: () => {
+          useUITask.getState().actions.stopListening();
+          voiceControl.stopListening();
+        },
+        setKnowledge: (knowledge) => {
+          useUITask.getState().actions.setKnowledge(knowledge);
+        },
+      },
     },
-    interrupt: () => {
-      set((state) => {
-        state.currentTask.status = "interrupted";
-      });
-    },
-    // for debugging
-    attachDebugger: async () => {
-      const activeTab = await findActiveTab();
-      if (!activeTab?.id) throw new Error("No active tab found");
-      const tabId = activeTab.id;
-      set((state) => {
-        state.currentTask.tabId = tabId;
-      });
-      await attachDebugger(tabId);
-    },
-    detachDebugger: async () => {
-      await detachAllDebuggers();
-    },
-    showImagePrompt: async () => {
-      const activeTab = await findActiveTab();
-      const tabId = activeTab?.id || -1;
-      if (!activeTab || !tabId) {
-        throw new Error("No active tab found");
-      }
-      const customKnowledgeBase = get().settings.customKnowledgeBase;
-      const knowledge = await fetchKnowledge(
-        new URL(activeTab.url ?? ""),
-        customKnowledgeBase,
-      );
-      const [imgData, labelData] = await buildAnnotatedScreenshots(
-        tabId,
-        knowledge,
-      );
-      console.log(labelData);
-      openBase64InNewTab(imgData, "image/webp");
-    },
-    prepareLabels: async () => {
-      const activeTab = await findActiveTab();
-      const tabId = activeTab?.id || -1;
-      if (!activeTab || !tabId) {
-        throw new Error("No active tab found");
-      }
-      const customKnowledgeBase = get().settings.customKnowledgeBase;
-      const knowledge = await fetchKnowledge(
-        new URL(activeTab.url ?? ""),
-        customKnowledgeBase,
-      );
-      await callRPCWithTab(tabId, "drawLabels", [knowledge]);
-      await sleep(800);
-      await callRPCWithTab(tabId, "removeLabels", []);
-    },
-    // currently only for debugging operation format used vision model
-    performActionString: async (actionString: string) => {
-      const parsedResponse = parseResponse(actionString);
-      if (
-        parsedResponse.operation.name === "finish" ||
-        parsedResponse.operation.name === "fail"
-      ) {
-        return;
-      }
-      await operateTool(get().currentTask.tabId, parsedResponse.operation);
-    },
-    startListening: () =>
-      set((state) => {
-        state.currentTask.isListening = true;
-        voiceControl.startListening();
-      }),
-    stopListening: () =>
-      set((state) => {
-        state.currentTask.isListening = false;
-        voiceControl.stopListening();
-      }),
-  },
-});
+  };
+};
 
 function openBase64InNewTab(base64Data: string, contentType: string) {
   // Remove the prefix (e.g., "data:image/png;base64,") from the base64 data
