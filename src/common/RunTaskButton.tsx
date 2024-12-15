@@ -1,13 +1,13 @@
 import { Button, HStack, Icon } from "@chakra-ui/react";
 import React from "react";
-import { useAppState } from "../state/store";
 import { BsPlayFill, BsStopFill } from "react-icons/bs";
+import { useCoreTaskStore } from "../state/hooks";
+import { useAppState } from "../state/store";
 
 export default function RunTaskButton(props: { runTask: () => void }) {
-  const state = useAppState((state) => ({
-    taskState: state.currentTask.status,
+  const { status: taskState } = useCoreTaskStore();
+  const { instructions } = useAppState((state) => ({
     instructions: state.ui.instructions,
-    interruptTask: state.currentTask.actions.interrupt,
   }));
 
   let button = (
@@ -15,17 +15,17 @@ export default function RunTaskButton(props: { runTask: () => void }) {
       rightIcon={<Icon as={BsPlayFill} boxSize={6} />}
       onClick={props.runTask}
       colorScheme="green"
-      disabled={state.taskState === "running" || !state.instructions}
+      disabled={taskState === "running" || !instructions}
     >
       Start Task
     </Button>
   );
 
-  if (state.taskState === "running") {
+  if (taskState === "running") {
     button = (
       <Button
         rightIcon={<Icon as={BsStopFill} boxSize={6} />}
-        onClick={state.interruptTask}
+        onClick={() => useCoreTaskStore.getState().actions.interrupt()}
         colorScheme="red"
       >
         Stop

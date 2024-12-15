@@ -140,7 +140,7 @@ const TaskHistoryItem = ({ index, entry }: TaskHistoryItemProps) => {
               <CollapsibleComponent
                 title="Response"
                 subtitle={`${entry.usage.completion_tokens} tokens`}
-                text={entry.response}
+                text={entry.rawResponse}
               />
               <CollapsibleComponent
                 title="Action"

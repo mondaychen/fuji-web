@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from "react";
 import { Button, HStack, Icon } from "@chakra-ui/react";
 import { BsPlayFill, BsStopFill } from "react-icons/bs";
-import { useAppState } from "../state/store";
+import { useUITask } from "../state/uiTask";
 
 export default function VoiceButton({
   taskInProgress,
@@ -10,22 +10,25 @@ export default function VoiceButton({
   taskInProgress: boolean;
   onStopSpeaking: () => void;
 }) {
-  const state = useAppState((state) => ({
-    isListening: state.currentTask.isListening,
-    startListening: state.currentTask.actions.startListening,
-    stopListening: state.currentTask.actions.stopListening,
-  }));
+  const { isListening, actions } = useUITask();
+  const { startListening, stopListening } = actions;
 
   const toggleVoiceControl = useCallback(() => {
     if (!taskInProgress) {
-      if (!state.isListening) {
-        state.startListening();
+      if (!isListening) {
+        startListening();
       } else {
-        state.stopListening();
+        stopListening();
         onStopSpeaking();
       }
     }
-  }, [state, taskInProgress, onStopSpeaking]);
+  }, [
+    isListening,
+    startListening,
+    stopListening,
+    taskInProgress,
+    onStopSpeaking,
+  ]);
 
   useEffect(() => {
     if (!taskInProgress) {
@@ -44,13 +47,13 @@ export default function VoiceButton({
   const button = (
     <Button
       rightIcon={
-        <Icon as={state.isListening ? BsStopFill : BsPlayFill} boxSize={6} />
+        <Icon as={isListening ? BsStopFill : BsPlayFill} boxSize={6} />
       }
       onClick={toggleVoiceControl}
-      colorScheme={state.isListening ? "red" : "blue"}
+      colorScheme={isListening ? "red" : "blue"}
       isDisabled={taskInProgress}
     >
-      {state.isListening ? "Stop" : "Start"} Speaking
+      {isListening ? "Stop" : "Start"} Speaking
     </Button>
   );
 
